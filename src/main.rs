@@ -1,16 +1,12 @@
+mod patchfinder;
+
 extern crate libc;
 extern crate memchr;
 
 use std::fs;
 use memchr::memmem;
-
-#[allow(non_camel_case_types)]
-type addr_t = u64; //actually unsigned long long but u64 is the same
-extern "C" {
-    //funcs from patchfinder64.c
-    fn bof64(buf: *const u8, start: addr_t, where_: addr_t) -> addr_t;
-    fn xref64(buf: *const u8, start: addr_t, end: addr_t, what: addr_t) -> addr_t;
-}
+use patchfinder::xref64;
+use patchfinder::bof64;
 
 fn iboot_ver(buf: &Vec<u8>) -> usize {
     let iboot_ver = match std::str::from_utf8(&buf[0x280..0x2A0]) {
@@ -56,7 +52,7 @@ fn get_rsa_patch(buf: &mut Vec<u8>, ver: &usize) {
         else {
             panic!("Version not supported");
         };
-    let beg_func: usize = unsafe {bof64(buf.as_ptr(), 0, find as u64)} as usize;
+    let beg_func: usize = bof64(buf, 0, find as u64) as usize;
     buf[beg_func..=(beg_func+7)].copy_from_slice(b"\x00\x00\x80\xD2\xC0\x03\x5F\xD6");
 
     println!("[+] Patched RSA signature checks");
@@ -68,7 +64,7 @@ fn get_debugenabled_patch(buf: &mut Vec<u8>) {
         panic!("[-] Failed to find debug-enabled string")
     );
 
-    let beg_func: usize = (unsafe {xref64(buf.as_ptr(), 0, buf.len() as u64, find as u64)} + 0x28) as usize;
+    let beg_func: usize = (xref64(buf, 0, buf.len() as u64, find as u64) + 0x28) as usize;
     buf[beg_func..=(beg_func+3)].copy_from_slice(b"\x20\x00\x80\xD2");
 
     println!("[+] Enabled kernel debug");
