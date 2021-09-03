@@ -7,25 +7,36 @@ use std::fs;
 use memchr::memmem;
 use patchfinder::xref64;
 use patchfinder::bof64;
+use patchfinder::make_bl;
+use patchfinder::follow_call64;
 
-fn iboot_ver(buf: &Vec<u8>) -> usize {
+fn iboot_ver(buf: &Vec<u8>) -> (usize, bool) {
     let iboot_ver = match std::str::from_utf8(&buf[0x280..0x2A0]) {
         Ok(ver) => ver,
         Err(e) => panic!("Unable to get UTF-8 string!\nerr: {}", e),
     };
 
+    let iboot_type = match std::str::from_utf8(&buf[0x200..=0x204]) {
+        Ok(ver) => ver,
+        Err(e) => panic!("Unable to get UTF-8 string!\nerr: {}", e),
+    };
+
     if iboot_ver.contains("iBoot") {
-        print!("inputted: {}\n", iboot_ver);
+        println!("inputted: {}", iboot_ver);
         let dot: usize = iboot_ver.find('.').unwrap(); //find index of dot, e.g. iBoot-2817., in order to get version
         let iboot_ver = iboot_ver[6..dot].parse::<usize>().unwrap();
-        return iboot_ver;
+        if iboot_type.contains("iBSS") || iboot_type.contains("LLB ") {
+            return (iboot_ver, true);
+        } else {
+            return (iboot_ver, false);
+        }
     } else {
         panic!("Invalid image. Make sure image is extracted, iPatcher doesn't support IM4P/IMG4");
     }
 }
 
 fn get_rsa_patch(buf: &mut Vec<u8>, ver: &usize) {
-	println!("getting get_rsa_patch()");
+    println!("getting get_rsa_patch()");
     let find: usize =
         // iOS 9.x and later
         if ver >= &2817 {
@@ -53,25 +64,25 @@ fn get_rsa_patch(buf: &mut Vec<u8>, ver: &usize) {
             panic!("Version not supported");
         };
     let beg_func: usize = bof64(buf, 0, find as u64) as usize;
-    buf[beg_func..=(beg_func+7)].copy_from_slice(b"\x00\x00\x80\xD2\xC0\x03\x5F\xD6");
+    buf[beg_func..(beg_func+8)].copy_from_slice(b"\x00\x00\x80\xD2\xC0\x03\x5F\xD6");
 
     println!("[+] Patched RSA signature checks");
 }
 
 fn get_debugenabled_patch(buf: &mut Vec<u8>) {
-	println!("getting get_debugenabled_patch()");
+    println!("getting get_debugenabled_patch()");
     let find = memmem::find(&buf, b"debug-enabled").unwrap_or_else(|| 
         panic!("[-] Failed to find debug-enabled string")
     );
 
     let beg_func: usize = (xref64(buf, 0, buf.len() as u64, find as u64) + 0x28) as usize;
-    buf[beg_func..=(beg_func+3)].copy_from_slice(b"\x20\x00\x80\xD2");
+    buf[beg_func..(beg_func+4)].copy_from_slice(b"\x20\x00\x80\xD2");
 
     println!("[+] Enabled kernel debug");
 }
 
 fn get_bootargs_patch(buf: &mut Vec<u8>, args: &String) {
-	println!("getting get_bootargs_patch(\"{}\")", *args);
+    println!("getting get_bootargs_patch(\"{}\")", *args);
 
     let find = memmem::find(&buf, b"rd=md0 nand-enable-reformat=1").unwrap_or_else(|| 
         panic!("[-] Failed to find debug-enabled string")
@@ -94,31 +105,97 @@ fn get_bootargs_patch(buf: &mut Vec<u8>, args: &String) {
     println!("[+] Set xnu boot-args to \"{}\"", arg);
 }
 
+fn get_secrom_patch(buf: &mut Vec<u8>, ver: &usize) {
+    if ver == &2817 { panic!("iOS 9 iBoots aren't supported by SecureROM patch"); }
+    println!("getting get_secrom_patch()");
+
+    /* ARM64 ASM:
+        BL tramp_init
+        MOV X1, X0
+        MOV W0, #7 @ BOOT_TARGET = BOOT_SECUREROM
+        MOV X2, #0x100000000
+        MOV X3, #0
+        BL prepare_and_jump
+    */
+
+    let prepare_and_jump: u64;
+    let tramp_init: u64;
+    
+    //find prepare_and_jump()
+    let find1 = memmem::find(&buf, b"jumping into image at").unwrap_or_else(|| 
+        panic!("[-] Failed to find prepare_and_jump")
+    );
+
+    let beg_func1: usize = xref64(buf, 0, buf.len() as u64, find1 as u64) as usize;
+    
+    if ver == &1940 {
+        prepare_and_jump = follow_call64(buf, (beg_func1 + 0x1c) as u64);
+        tramp_init = follow_call64(buf, (beg_func1 + 0x8) as u64);
+    } else if ver == &2261 {
+        prepare_and_jump = follow_call64(buf, (beg_func1 + 0x28) as u64);
+        tramp_init = follow_call64(buf, (beg_func1 + 0x10) as u64);
+    } else {
+        panic!("Version not supported")
+    }
+
+    //find go cmd
+    let find2 = memmem::find(&buf, b"cebilefctmbrtlhptreprmmh").unwrap_or_else(|| 
+        panic!("[-] Failed to find go cmd")
+    );
+
+    let beg_func2: usize;
+
+    if ver == &1940 {
+        beg_func2 = (xref64(buf, 0, buf.len() as u64, find2 as u64) - 0x44) as usize;
+    } else if ver == &2261 {
+        beg_func2 = (xref64(buf, 0, buf.len() as u64, find2 as u64) - 0x30) as usize;
+    } else {
+        panic!("Version not supported")
+    }
+    
+    // write the payload
+    buf[beg_func2..(beg_func2+4)].copy_from_slice(&make_bl(beg_func2 as u32, tramp_init as u32).to_le_bytes()); // BL tramp_init
+    /* Little Endian bytes of ARM64 ASM:
+        MOV X1, X0
+        MOV W0, #7
+        MOV X2, #100000000
+        MOV X3, #0
+    */
+    buf[(beg_func2+4)..(beg_func2+20)].copy_from_slice(b"\xE1\x03\x00\xAA\xE0\x00\x80\x52\x22\x00\xC0\xD2\x03\x00\x80\xD2");
+    buf[(beg_func2+20)..(beg_func2+24)].copy_from_slice(&make_bl((beg_func2 + 0x14) as u32, prepare_and_jump as u32).to_le_bytes()); // BL prepare_and_jump
+    println!("[+] Applied patch to boot SecureROM");
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
     let argc: usize = argv.len();
     if argc < 3 {
    	    println!("iPatcher-rs - tool to patch lower versions of iBoot64 in rust by @plzdonthaxme");
-        println!("Usage: {} iBoot iBoot.pwn [-b]", &argv[0]);
+        println!("Usage: {} iBoot iBoot.pwn [options]", &argv[0]);
         println!("       -b set custom boot-args");
+        println!("       -s patch to boot SecureROM");
         std::process::exit(0);
     }
 
     println!("main: Starting...");
 
     let filein = &argv[1];
-	let fileout = &argv[2];
+    let fileout = &argv[2];
 
     let mut filevec: Vec<u8> = fs::read(filein).expect("[-] Failed to open iBoot, err"); //will append error message after err with colon
 
-    let ibootver = iboot_ver(&filevec);
+    let (ibootver, ibss) = iboot_ver(&filevec);
 
     get_rsa_patch(&mut filevec, &ibootver);
-    get_debugenabled_patch(&mut filevec);
 
-    for i in 0..argv.len() {
-        if argv[i] == "-b" {
-            get_bootargs_patch(&mut filevec, &argv[i+1]);
+    if !ibss {
+        get_debugenabled_patch(&mut filevec);
+        for i in 0..argv.len() {
+            if argv[i] == "-b" {
+                get_bootargs_patch(&mut filevec, &argv[i+1]);
+            } else if argv[i] == "-s" {
+                get_secrom_patch(&mut filevec, &ibootver);
+            }
         }
     }
 
