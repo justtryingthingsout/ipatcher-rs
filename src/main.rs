@@ -5,10 +5,7 @@ extern crate memchr;
 
 use std::fs;
 use memchr::memmem;
-use patchfinder::xref64;
-use patchfinder::bof64;
-use patchfinder::make_bl;
-use patchfinder::follow_call64;
+use patchfinder::*;
 
 fn iboot_ver(buf: &Vec<u8>) -> (usize, bool) {
     let iboot_ver = match std::str::from_utf8(&buf[0x280..0x2A0]) {
@@ -63,7 +60,7 @@ fn get_rsa_patch(buf: &mut Vec<u8>, ver: &usize) {
         else {
             panic!("Version not supported");
         };
-    let beg_func: usize = bof64(buf, 0, find as u64) as usize;
+    let beg_func = bof64(buf, 0, find);
     buf[beg_func..(beg_func+8)].copy_from_slice(b"\x00\x00\x80\xD2\xC0\x03\x5F\xD6");
 
     println!("[+] Patched RSA signature checks");
@@ -71,11 +68,12 @@ fn get_rsa_patch(buf: &mut Vec<u8>, ver: &usize) {
 
 fn get_debugenabled_patch(buf: &mut Vec<u8>) {
     println!("getting get_debugenabled_patch()");
+
     let find = memmem::find(&buf, b"debug-enabled").unwrap_or_else(|| 
         panic!("[-] Failed to find debug-enabled string")
     );
 
-    let beg_func: usize = (xref64(buf, 0, buf.len() as u64, find as u64) + 0x28) as usize;
+    let beg_func = xref64(buf, 0, buf.len(), find) + 0x28;
     buf[beg_func..(beg_func+4)].copy_from_slice(b"\x20\x00\x80\xD2");
 
     println!("[+] Enabled kernel debug");
@@ -118,22 +116,22 @@ fn get_secrom_patch(buf: &mut Vec<u8>, ver: &usize) {
         BL prepare_and_jump
     */
 
-    let prepare_and_jump: u64;
-    let tramp_init: u64;
-    
+    let prepare_and_jump;
+    let tramp_init;
+
     //find prepare_and_jump()
     let find1 = memmem::find(&buf, b"jumping into image at").unwrap_or_else(|| 
         panic!("[-] Failed to find prepare_and_jump")
     );
 
-    let beg_func1: usize = xref64(buf, 0, buf.len() as u64, find1 as u64) as usize;
+    let beg_func1 = xref64(buf, 0, buf.len(), find1);
     
     if ver == &1940 {
-        prepare_and_jump = follow_call64(buf, (beg_func1 + 0x1c) as u64);
-        tramp_init = follow_call64(buf, (beg_func1 + 0x8) as u64);
+        prepare_and_jump = follow_call64(buf, beg_func1 + 0x1c);
+        tramp_init = follow_call64(buf, beg_func1 + 0x8);
     } else if ver == &2261 {
-        prepare_and_jump = follow_call64(buf, (beg_func1 + 0x28) as u64);
-        tramp_init = follow_call64(buf, (beg_func1 + 0x10) as u64);
+        prepare_and_jump = follow_call64(buf, beg_func1 + 0x28);
+        tramp_init = follow_call64(buf, beg_func1 + 0x10);
     } else {
         panic!("Version not supported")
     }
@@ -146,15 +144,15 @@ fn get_secrom_patch(buf: &mut Vec<u8>, ver: &usize) {
     let beg_func2: usize;
 
     if ver == &1940 {
-        beg_func2 = (xref64(buf, 0, buf.len() as u64, find2 as u64) - 0x44) as usize;
+        beg_func2 = xref64(buf, 0, buf.len(), find2) - 0x44;
     } else if ver == &2261 {
-        beg_func2 = (xref64(buf, 0, buf.len() as u64, find2 as u64) - 0x30) as usize;
+        beg_func2 = xref64(buf, 0, buf.len(), find2) - 0x30; 
     } else {
         panic!("Version not supported")
     }
     
     // write the payload
-    buf[beg_func2..(beg_func2+4)].copy_from_slice(&make_bl(beg_func2 as u32, tramp_init as u32).to_le_bytes()); // BL tramp_init
+    buf[beg_func2..(beg_func2+4)].copy_from_slice(&make_bl(beg_func2, tramp_init).to_le_bytes()); // BL tramp_init
     /* Little Endian bytes of ARM64 ASM:
         MOV X1, X0
         MOV W0, #7
@@ -162,13 +160,13 @@ fn get_secrom_patch(buf: &mut Vec<u8>, ver: &usize) {
         MOV X3, #0
     */
     buf[(beg_func2+4)..(beg_func2+20)].copy_from_slice(b"\xE1\x03\x00\xAA\xE0\x00\x80\x52\x22\x00\xC0\xD2\x03\x00\x80\xD2");
-    buf[(beg_func2+20)..(beg_func2+24)].copy_from_slice(&make_bl((beg_func2 + 0x14) as u32, prepare_and_jump as u32).to_le_bytes()); // BL prepare_and_jump
+    buf[(beg_func2+20)..(beg_func2+24)].copy_from_slice(&make_bl(beg_func2 + 0x14, prepare_and_jump).to_le_bytes()); // BL prepare_and_jump
     println!("[+] Applied patch to boot SecureROM");
 }
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
-    let argc: usize = argv.len();
+    let argc = argv.len();
     if argc < 3 {
    	    println!("iPatcher-rs - tool to patch lower versions of iBoot64 in rust by @plzdonthaxme");
         println!("Usage: {} iBoot iBoot.pwn [options]", &argv[0]);
@@ -199,8 +197,8 @@ fn main() {
         }
     }
 
+    println!("[*] Writing out patched file to {}", fileout);
     fs::write(fileout, filevec).expect("[-] Failed to write iBoot to file, err");
 
-    println!("[*] Writing out patched file to {}", fileout);
     println!("main: Quitting...");
 }
