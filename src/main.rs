@@ -1,6 +1,4 @@
 mod patchfinder;
-
-extern crate libc;
 extern crate memchr;
 
 use std::fs;
@@ -164,15 +162,21 @@ fn get_secrom_patch(buf: &mut Vec<u8>, ver: &usize) {
     println!("[+] Applied patch to boot SecureROM");
 }
 
+fn usage(argv: &str) {
+    println!("iPatcher-rs - tool to patch lower versions of iBoot64 in rust by @plzdonthaxme");
+    println!("Usage: {} iBoot iBoot.pwn [options]", argv);
+    println!("       -b set custom boot-args");
+    println!("       -s patch to boot SecureROM");
+    std::process::exit(0);
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
     let argc = argv.len();
+    
     if argc < 3 {
-   	    println!("iPatcher-rs - tool to patch lower versions of iBoot64 in rust by @plzdonthaxme");
-        println!("Usage: {} iBoot iBoot.pwn [options]", &argv[0]);
-        println!("       -b set custom boot-args");
-        println!("       -s patch to boot SecureROM");
-        std::process::exit(0);
+        println!("[!] Not enough arguments");
+   	    usage(&argv[0])
     }
 
     println!("main: Starting...");
@@ -188,14 +192,14 @@ fn main() {
 
     if !ibss {
         get_debugenabled_patch(&mut filevec);
-        for i in 0..argv.len() {
-            if argv[i] == "-b" {
-                get_bootargs_patch(&mut filevec, &argv[i+1]);
-            } else if argv[i] == "-s" {
-                get_secrom_patch(&mut filevec, &ibootver);
-            }
-        }
-    }
+        for i in 0..(argv.len()-1) {
+            match &argv[i][..] {
+                "-b" => get_bootargs_patch(&mut filevec, &argv[i+1]),
+                "-s" => get_secrom_patch(&mut filevec, &ibootver),
+                _ => (), //TODO: find invalid arguments
+            } //end match
+        } //endfor
+    } //endif
 
     println!("[*] Writing out patched file to {}", fileout);
     fs::write(fileout, filevec).expect("[-] Failed to write iBoot to file, err");

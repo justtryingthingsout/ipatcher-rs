@@ -88,11 +88,11 @@ pub fn xref64(buf: &Vec<u8>, start: usize, end: usize, what: usize) -> usize {
     } panic!("Did not find offset"); //endfor
 }
 
-pub fn make_bl(from: usize, to: usize) -> usize {
+pub fn make_bl(from: usize, to: usize) -> u32 {
     if from > to { 
-        0x18000000 - (from - to) / 4
+        (0x18000000 - (from - to) / 4) as u32
     } else {
-        0x94000000 + (to - from) / 4
+        (0x94000000 + (to - from) / 4) as u32
     }
 }
 
