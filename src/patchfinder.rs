@@ -22,7 +22,7 @@ macro_rules! range {
     }
 }
 
-pub fn bof64(buf: &Vec<u8>, start: usize, mut loc: usize) -> usize {
+pub fn bof64(buf: &[u8], start: usize, mut loc: usize) -> usize {
     while loc >= start {
         loc -= 4;
         let op = u32cast!(buf, loc);
@@ -45,7 +45,7 @@ pub fn bof64(buf: &Vec<u8>, start: usize, mut loc: usize) -> usize {
                         return loc
                     }
                     // STP x, y, [SP,#imm]
-                    if (au & 0xFFC003E0) != 0xA90003E0 { 
+                    else if (au & 0xFFC003E0) != 0xA90003E0 { 
                         loc += 4;
                         break
                     }
@@ -55,7 +55,7 @@ pub fn bof64(buf: &Vec<u8>, start: usize, mut loc: usize) -> usize {
     } panic!("Did not find offset"); //endfor
 }
 
-pub fn xref64(buf: &Vec<u8>, start: usize, end: usize, what: usize) -> usize {
+pub fn xref64(buf: &[u8], start: usize, end: usize, what: usize) -> usize {
     let mut value: [usize; 32] = [0; 32];
     for i in range!(start & !3, end & !3, 4) {
         let op = u32cast!(buf, i);
@@ -119,7 +119,7 @@ pub fn make_bl(from: usize, to: usize) -> [u8; 8] {
     }.to_le_bytes()
 }
 
-pub fn follow_call64(buf: &Vec<u8>, call: usize) -> usize {
+pub fn follow_call64(buf: &[u8], call: usize) -> usize {
     let mut w = u32cast!(buf, call) & 0x3FFFFFF;
     w <<= 64 - 26;
     w >>= 64 - 26 - 2;
